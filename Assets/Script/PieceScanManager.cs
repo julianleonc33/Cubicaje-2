@@ -9,9 +9,10 @@ using Microsoft.MixedReality.OpenXR;
 
 /// <summary>
 /// Gestiona la fase de escaneo de piezas:
-///   1. Escucha QRs con formato "A1;0.166;0.083;0.0415" (id;alto_m;ancho_m;fondo_m)
-///   2. Muestra un holograma cian por 1 segundo por cada pieza
-///   3. Guarda todas las piezas en un JSON automáticamente tras cada escaneo
+///   1. Escucha un QR maestro con formato "ID;alto;ancho;fondo;ID;alto;ancho;fondo;..."
+///      (N piezas concatenadas, cada una con exactamente 4 campos separados por ';')
+///   2. Muestra un holograma cian por 1 segundo como confirmación de lectura
+///   3. Guarda todas las piezas en un JSON automáticamente tras el escaneo
 ///
 /// Setup en Unity Editor:
 ///   - Asignar ARMarkerManager en el campo markerMgr
@@ -112,60 +113,71 @@ public class PieceScanManager : MonoBehaviour
         lastQRTime = now;
         lastAnyQRTime = now;
 
-        // Parsear formato "A1;0.166;0.083;0.0415"
-        if (!TryParsePieceQR(qr, out PieceEntry entry))
+        // Parsear QR maestro con formato "ID;alto;ancho;fondo;ID;alto;ancho;fondo;..."
+        if (!TryParseMasterQR(qr, out List<PieceEntry> entries))
         {
             Debug.LogWarning($"[PieceScan] QR no reconocido o mal formado: '{qr}'");
             return;
         }
 
-        // Guardar/actualizar en el diccionario
-        bool isUpdate = scannedPieces.ContainsKey(entry.id);
-        scannedPieces[entry.id] = entry;
+        // Guardar/actualizar todas las piezas del QR maestro
+        int nuevas = 0;
+        int actualizadas = 0;
+        foreach (var entry in entries)
+        {
+            bool isUpdate = scannedPieces.ContainsKey(entry.id);
+            scannedPieces[entry.id] = entry;
+            if (isUpdate) actualizadas++; else nuevas++;
+            Debug.Log($"[PieceScan] {(isUpdate ? "Actualizada" : "Nueva pieza")} → ID={entry.id}  alto={entry.alto_m}m  ancho={entry.ancho_m}m  fondo={entry.fondo_m}m");
+        }
 
-        string accion = isUpdate ? "Actualizada" : "Nueva pieza";
-        Debug.Log($"[PieceScan] {accion} → ID={entry.id}  alto={entry.alto_m}m  ancho={entry.ancho_m}m  fondo={entry.fondo_m}m  (Total: {scannedPieces.Count})");
+        Debug.Log($"[PieceScan] QR maestro procesado: {nuevas} nueva(s), {actualizadas} actualizada(s). Total en sesión: {scannedPieces.Count}");
 
-        // Auto-guardar tras cada escaneo
+        // Auto-guardar tras el escaneo
         SaveToJson();
 
-        // Mostrar holograma 1 segundo
-        SpawnScanHologram(m, entry);
+        // Mostrar holograma de confirmación (usando la primera pieza como referencia visual)
+        SpawnScanHologram(m, entries[0]);
     }
 
     // ===== Parseo del QR =====
 
     /// <summary>
-    /// Parsea "A1;0.166;0.083;0.0415" → PieceEntry con valores en metros.
-    /// Retorna false si el formato no es válido.
+    /// Parsea el QR maestro con formato "ID;alto;ancho;fondo;ID;alto;ancho;fondo;..."
+    /// Cada pieza ocupa exactamente 4 campos. La cantidad total de campos debe ser
+    /// múltiplo de 4. Retorna false si el formato no es válido.
     /// </summary>
-    private bool TryParsePieceQR(string qr, out PieceEntry entry)
+    private bool TryParseMasterQR(string qr, out List<PieceEntry> entries)
     {
-        entry = null;
+        entries = new List<PieceEntry>();
         var parts = qr.Split(';');
 
-        if (parts.Length != 4)
+        if (parts.Length == 0 || parts.Length % 4 != 0)
             return false;
 
-        string id = parts[0].Trim();
-        if (string.IsNullOrEmpty(id))
-            return false;
-
-        if (!float.TryParse(parts[1].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float alto))
-            return false;
-        if (!float.TryParse(parts[2].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float ancho))
-            return false;
-        if (!float.TryParse(parts[3].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float fondo))
-            return false;
-
-        entry = new PieceEntry
+        for (int i = 0; i < parts.Length; i += 4)
         {
-            id      = id,
-            alto_m  = alto,
-            ancho_m = ancho,
-            fondo_m = fondo
-        };
-        return true;
+            string id = parts[i].Trim();
+            if (string.IsNullOrEmpty(id))
+                return false;
+
+            if (!float.TryParse(parts[i + 1].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float alto))
+                return false;
+            if (!float.TryParse(parts[i + 2].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float ancho))
+                return false;
+            if (!float.TryParse(parts[i + 3].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float fondo))
+                return false;
+
+            entries.Add(new PieceEntry
+            {
+                id      = id,
+                alto_m  = alto,
+                ancho_m = ancho,
+                fondo_m = fondo
+            });
+        }
+
+        return entries.Count > 0;
     }
 
     // ===== Holograma de escaneo =====
