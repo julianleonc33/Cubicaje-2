@@ -27,10 +27,10 @@ public class PieceScanManager : MonoBehaviour
     // ===== Apariencia holograma =====
     [Header("Holograma de escaneo")]
     [Tooltip("Color del holograma que aparece al escanear una pieza.")]
-    public Color scanColor = new Color(0f, 0.9f, 1f, 0.75f);   // Cian semi-transparente
+    public Color scanColor = new Color(0f, 0.45f, 0.55f, 0.8f);   // Cian semi-transparente
 
     [Tooltip("Tiempo que el holograma permanece visible (s).")]
-    public float hologramLifetime = 1.0f;
+    public float hologramLifetime = 4.0f;
 
     // ===== Filtros anti-spam =====
     [Header("Filtros QR")]
@@ -120,18 +120,16 @@ public class PieceScanManager : MonoBehaviour
             return;
         }
 
-        // Guardar/actualizar todas las piezas del QR maestro
-        int nuevas = 0;
-        int actualizadas = 0;
+        // Guardar todas las piezas del QR maestro como una orden completa nueva.
+        scannedPieces.Clear();
+
         foreach (var entry in entries)
         {
-            bool isUpdate = scannedPieces.ContainsKey(entry.id);
             scannedPieces[entry.id] = entry;
-            if (isUpdate) actualizadas++; else nuevas++;
-            Debug.Log($"[PieceScan] {(isUpdate ? "Actualizada" : "Nueva pieza")} → ID={entry.id}  alto={entry.alto_m}m  ancho={entry.ancho_m}m  fondo={entry.fondo_m}m");
+            Debug.Log($"[PieceScan] Pieza cargada → ID={entry.id}  alto={entry.alto_m}m  ancho={entry.ancho_m}m  fondo={entry.fondo_m}m");
         }
 
-        Debug.Log($"[PieceScan] QR maestro procesado: {nuevas} nueva(s), {actualizadas} actualizada(s). Total en sesión: {scannedPieces.Count}");
+        Debug.Log($"[PieceScan] QR maestro procesado como orden nueva. Total en sesión: {scannedPieces.Count}");
 
         // Auto-guardar tras el escaneo
         SaveToJson();
@@ -157,7 +155,7 @@ public class PieceScanManager : MonoBehaviour
 
         for (int i = 0; i < parts.Length; i += 4)
         {
-            string id = parts[i].Trim();
+            string id = parts[i].Trim().ToUpperInvariant();
             if (string.IsNullOrEmpty(id))
                 return false;
 

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**CubicajeHL3** is a Unity Mixed Reality application for HoloLens 2. It guides a user through assembling a physical cubic puzzle by scanning QR codes on pieces and displaying holographic feedback in the correct positions.
+**CubicajeHL3** is a Unity Mixed Reality application for HoloLens 2. It guides a user through assembling a physical cubic puzzle: first scanning a **master QR** that encodes the full piece catalog for the order, then scanning a **pallet QR** to anchor a holographic pallet and dynamically compute an assembly sequence, showing holographic feedback as each piece is scanned.
 
 ## Build & Deploy
 
@@ -21,18 +21,20 @@ All MRTK and Mixed Reality packages are vendored locally under `Packages/MixedRe
 
 ### Two Independent Operational Flows
 
-**Flow 1 — Piece Catalog Scan** (`PieceScanManager.cs`)
-- Scans QR codes with format `"ID;alto_m;ancho_m;fondo_m"` (e.g. `"A1;0.166;0.083;0.0415"`)
-- Displays a cyan hologram at the QR location for 1 second per scan
-- Auto-saves all scanned pieces to `Application.persistentDataPath/piezas.json` after each scan
-- Pressing the MRTK3 "Detener" button finalizes and quits the app
+**Flow 1 — Master QR Catalog Scan** (`PieceScanManager.cs`)
+- Scans a single **master QR** encoding N pieces concatenated as `"ID;alto;ancho;fondo;ID;alto;ancho;fondo;..."` (each piece = exactly 4 fields, total field count must be a multiple of 4; e.g. `"A1;0.166;0.083;0.0415;A2;0.12;0.09;0.05"`)
+- Each successful scan **replaces** the current order (`scannedPieces.Clear()` before loading), so re-scanning a master QR starts a fresh order rather than merging with a previous one
+- Displays a cyan hologram at the QR location (sized to the first piece in the QR) for `hologramLifetime` seconds as scan confirmation
+- Auto-saves all pieces from the scan to `Application.persistentDataPath/piezas.json` immediately after parsing
+- There is no per-piece QR format anymore and no "Detener" finalize button in this script — one master QR scan is the complete catalog load
 
 **Flow 2 — Assembly Guidance** (`CubicajeARManager.cs`)
-- Scans a `"PALLET"` QR to anchor a holographic hollow-box pallet in world space (via `ARAnchor`)
-- Then guides the user through 12 pieces in a hardcoded sequence: `A1→A2→A3→B1→B2→B3→B4→B5→B6→A4→A5→A6`
-- Correct piece: green hologram travels along a quadratic Bézier curve into its slot in the pallet
-- Wrong piece: red hologram appears at the QR location for ~1 second
-- Completion: back wall of the pallet pulses to bright green
+- Scans a `"PALLET"` QR; on first detection it reads `piezas.json`, runs `CubicajeEngine.Solve()` to compute placement + assembly order, then anchors a holographic hollow-box pallet in world space (via `ARAnchor`)
+- The assembly sequence is **not hardcoded** — it is whatever `CubicajeEngine.Solve()` returns for the pieces present in `piezas.json` at pallet-scan time (see Cubicaje Engine below)
+- If a piece doesn't fit in the pallet, it's dropped from the sequence (logged as "Armado parcial"); scanning its QR afterward is ignored (`IsKnownPieceId`) rather than shown as an error
+- Correct piece: green hologram travels along a two-segment quadratic Bézier curve (approach in front of the pallet, then into its slot)
+- Wrong piece (a known ID, just out of order): red hologram appears at the QR location for ~1 second
+- Completion: back wall of the pallet pulses to bright green, and marker scanning is disabled
 
 ### Flow Control (`StartMenuManager.cs`)
 - On start, shows an MRTK3 billboard menu and disables both `PieceScanManager` and `ARMarkerManager`
@@ -43,8 +45,15 @@ All MRTK and Mixed Reality packages are vendored locally under `Packages/MixedRe
 - `PieceEntry`: `{ id, alto_m, ancho_m, fondo_m }` — dimensions in Unity meters (Y=alto, X=ancho, Z=fondo)
 - `PieceListWrapper`: JSON serialization wrapper for `List<PieceEntry>`
 
+### Cubicaje Engine (`CubicajeEngine.cs`)
+- `CubicajeEngine.Solve(pieces, palletInner, margin)` is a greedy 3D shelf-packing algorithm, called by `CubicajeARManager` right when the `PALLET` QR is first scanned
+- Steps: sort pieces by volume descending → for each piece pick the orientation (of 6 possible) with the lowest height that fits → place left→right (X), wrap to next row in depth (Z) when full, wrap to next layer (Y) when a row can't fit
+- Output is `List<PlacedPiece>` (`{ id, localPos, localEuler, scale }`, local to the pallet), sorted into assembly order by `Y asc → Z asc → X asc` (floor before ceiling, back of pallet before front, left before right)
+- Pieces that don't fit in any orientation are logged and dropped from both the placement and the sequence
+
 ### Key Design Decisions
-- Piece positions/rotations for all 12 slots (6×A, 6×B) are **hardcoded** in `CubicajeARManager.defs[]` as `PieceDef` structs — not loaded from the JSON
+- Piece positions, rotations, and the assembly sequence are computed **dynamically** by `CubicajeEngine.Solve()` from whatever is in `piezas.json` at the moment the `PALLET` QR is scanned — nothing about piece count or order is hardcoded in `CubicajeARManager`
+- The piece catalog itself comes from a single **master QR** (`PieceScanManager`), not one QR per piece
 - QR spam is suppressed by two independent cooldowns: per-text (`qrCooldown`) and global (`qrGlobalCooldownSeconds`), both configurable in the Inspector
 - The pallet is procedurally built from primitive Cubes at runtime (`CreateHollowPallet`), using `Legacy Shaders/Transparent/Diffuse` for semi-transparent walls
 - The pallet faces the camera at the moment of first detection and does not track the QR further (locked via `ARAnchor`)
@@ -58,9 +67,9 @@ All MRTK and Mixed Reality packages are vendored locally under `Packages/MixedRe
 
 | Context | Format | Example |
 |---|---|---|
-| Pallet marker | `PALLET` | `PALLET` |
-| Assembly piece | bare ID | `A1`, `B3` |
-| Scan-mode piece | `ID;alto;ancho;fondo` | `A1;0.166;0.083;0.0415` |
+| Master QR (catalog, Flow 1) | `ID;alto;ancho;fondo` repeated, concatenated | `A1;0.166;0.083;0.0415;A2;0.12;0.09;0.05` |
+| Pallet marker (Flow 2) | `PALLET` | `PALLET` |
+| Assembly piece (Flow 2) | bare ID, must match a piece placed by `CubicajeEngine.Solve()` | `A1`, `B3` |
 
 ---
 

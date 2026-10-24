@@ -164,6 +164,26 @@ public class CubicajeARManager : MonoBehaviour
         );
 
         placedPieces  = CubicajeEngine.Solve(wrapper.piezas, palletInner, innerMargin);
+
+        if (placedPieces.Count < wrapper.piezas.Count)
+        {
+            var placedIds = new HashSet<string>();
+            foreach (var placed in placedPieces)
+                placedIds.Add(placed.id);
+
+            var missingIds = new List<string>();
+            foreach (var piece in wrapper.piezas)
+            {
+                if (!placedIds.Contains(piece.id))
+                    missingIds.Add(piece.id);
+            }
+
+            Debug.LogWarning($"[CubicajeAR] Armado parcial: no todas las piezas caben en el pallet. " +
+                             $"Colocadas={placedPieces.Count}/{wrapper.piezas.Count}. " +
+                             $"Fuera del pallet: {string.Join(", ", missingIds)}. " +
+                             "La secuencia continuará solo con las piezas colocadas.");
+        }
+
         assemblySequence = new string[placedPieces.Count];
         for (int i = 0; i < placedPieces.Count; i++)
             assemblySequence[i] = placedPieces[i].id;
@@ -243,7 +263,7 @@ public class CubicajeARManager : MonoBehaviour
         if (qr == "PALLET" || qr == "PALLET.")
             return; // ignorar pallet una vez fijado
 
-        if (!qr.StartsWith("A") && !qr.StartsWith("B"))
+        if (!IsKnownPieceId(qr))
             return;
 
         if (seqIndex >= assemblySequence.Length) return;
@@ -402,6 +422,14 @@ public class CubicajeARManager : MonoBehaviour
             localEuler = Vector3.zero,
             scale      = new Vector3(0.1f, 0.1f, 0.1f)
         };
+    }
+
+    private bool IsKnownPieceId(string id)
+    {
+        foreach (var p in placedPieces)
+            if (p.id == id) return true;
+
+        return false;
     }
 
     private void HandleCorrectPiece(ARMarker marker, PlacedPiece def)
