@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>QR Piezas Cubicaje</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: Arial, sans-serif;
+      background: #f0f0f0;
+      padding: 20px;
+    }
+
+    h1 {
+      text-align: center;
+      margin-bottom: 6px;
+      font-size: 22px;
+      color: #222;
+    }
+
+    .subtitle {
+      text-align: center;
+      color: #666;
+      font-size: 13px;
+      margin-bottom: 24px;
+    }
+
+    .group-title {
+      font-size: 16px;
+      font-weight: bold;
+      color: #fff;
+      padding: 6px 16px;
+      border-radius: 6px;
+      margin: 16px 0 10px 0;
+      display: inline-block;
+    }
+    .group-A { background: #1a6fbf; }
+    .group-B { background: #b84a00; }
+
+    .grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      margin-bottom: 10px;
+    }
+
+    .card {
+      background: white;
+      border-radius: 10px;
+      padding: 14px;
+      width: 170px;
+      text-align: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+      border: 2px solid #ddd;
+    }
+
+    .card.group-A-card { border-color: #1a6fbf; }
+    .card.group-B-card { border-color: #b84a00; }
+
+    .card .id {
+      font-size: 22px;
+      font-weight: bold;
+      margin-bottom: 8px;
+    }
+    .group-A-card .id { color: #1a6fbf; }
+    .group-B-card .id { color: #b84a00; }
+
+    .qr-box {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      margin: 8px 0;
+    }
+
+    .dims {
+      font-size: 10px;
+      color: #555;
+      margin-top: 8px;
+      line-height: 1.5;
+      font-family: monospace;
+      background: #f5f5f5;
+      border-radius: 4px;
+      padding: 4px 6px;
+    }
+
+    .qr-text {
+      font-size: 9px;
+      color: #999;
+      margin-top: 5px;
+      word-break: break-all;
+      font-family: monospace;
+    }
+
+    @media print {
+      body { background: white; padding: 10px; }
+      .card { box-shadow: none; page-break-inside: avoid; }
+      .no-print { display: none; }
+    }
+
+    .btn-print {
+      display: block;
+      margin: 0 auto 24px auto;
+      padding: 10px 30px;
+      background: #1a6fbf;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 15px;
+      cursor: pointer;
+    }
+    .btn-print:hover { background: #155da0; }
+  </style>
+</head>
+<body>
+
+  <h1>QR Piezas — Cubicaje HoloLens</h1>
+  <p class="subtitle">Formato: ID ; alto_m ; ancho_m ; fondo_m</p>
+
+  <button class="btn-print no-print" onclick="window.print()">🖨️ Imprimir / Guardar PDF</button>
+
+  <!-- GRUPO A -->
+  <span class="group-title group-A">Grupo A — 166 × 83 × 41.5 mm</span>
+  <div class="grid" id="groupA"></div>
+
+  <!-- GRUPO B -->
+  <span class="group-title group-B">Grupo B — 124.5 × 83 × 83 mm</span>
+  <div class="grid" id="groupB"></div>
+
+  <script>
+    // Piezas definidas según PieceDef original
+    // scale = Vector3(x, y, z) donde x=ancho, y=alto, z=fondo
+    // Formato QR: id;alto;ancho;fondo
+    const pieces = [
+      // Grupo A  → scale(0.166, 0.083, 0.0415) → alto=0.083, ancho=0.166, fondo=0.0415
+      { id: "A1", alto: 0.083,  ancho: 0.166,  fondo: 0.0415, group: "A" },
+      { id: "A2", alto: 0.083,  ancho: 0.166,  fondo: 0.0415, group: "A" },
+      { id: "A3", alto: 0.083,  ancho: 0.166,  fondo: 0.0415, group: "A" },
+      { id: "A4", alto: 0.083,  ancho: 0.166,  fondo: 0.0415, group: "A" },
+      { id: "A5", alto: 0.083,  ancho: 0.166,  fondo: 0.0415, group: "A" },
+      { id: "A6", alto: 0.083,  ancho: 0.166,  fondo: 0.0415, group: "A" },
+      // Grupo B  → scale(0.1245, 0.083, 0.083) → alto=0.083, ancho=0.1245, fondo=0.083
+      { id: "B1", alto: 0.083,  ancho: 0.1245, fondo: 0.083,  group: "B" },
+      { id: "B2", alto: 0.083,  ancho: 0.1245, fondo: 0.083,  group: "B" },
+      { id: "B3", alto: 0.083,  ancho: 0.1245, fondo: 0.083,  group: "B" },
+      { id: "B4", alto: 0.083,  ancho: 0.1245, fondo: 0.083,  group: "B" },
+      { id: "B5", alto: 0.083,  ancho: 0.1245, fondo: 0.083,  group: "B" },
+      { id: "B6", alto: 0.083,  ancho: 0.1245, fondo: 0.083,  group: "B" },
+    ];
+
+    pieces.forEach(p => {
+      const qrText = `${p.id};${p.alto};${p.ancho};${p.fondo}`;
+      const container = document.getElementById(`group${p.group}`);
+
+      const card = document.createElement("div");
+      card.className = `card group-${p.group}-card`;
+
+      const idLabel = document.createElement("div");
+      idLabel.className = "id";
+      idLabel.textContent = p.id;
+
+      const qrBox = document.createElement("div");
+      qrBox.className = "qr-box";
+      const qrDiv = document.createElement("div");
+      qrBox.appendChild(qrDiv);
+
+      const dims = document.createElement("div");
+      dims.className = "dims";
+      dims.innerHTML =
+        `Alto:  ${(p.alto  * 1000).toFixed(1)} mm<br>` +
+        `Ancho: ${(p.ancho * 1000).toFixed(1)} mm<br>` +
+        `Fondo: ${(p.fondo * 1000).toFixed(1)} mm`;
+
+      const qrTextEl = document.createElement("div");
+      qrTextEl.className = "qr-text";
+      qrTextEl.textContent = qrText;
+
+      card.appendChild(idLabel);
+      card.appendChild(qrBox);
+      card.appendChild(dims);
+      card.appendChild(qrTextEl);
+      container.appendChild(card);
+
+      new QRCode(qrDiv, {
+        text: qrText,
+        width: 130,
+        height: 130,
+        colorDark: "#000000",
+        colorLight: "#ffffff",
+        correctLevel: QRCode.CorrectLevel.M
+      });
+    });
+  </script>
+</body>
+</html>
