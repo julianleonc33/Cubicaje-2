@@ -1,0 +1,12 @@
+<!--
+  Evita que IL2CPP elimine (stripping) código de MRTK3 que se crea por reflexión.
+  Sin esto, el constructor de OpenXRHandsSubsystem+OpenXRHandContainer desaparece en el
+  build de HoloLens, el MRTKLifecycleManager lanza MissingMethodException al arrancar
+  ese subsistema y deja SIN ARRANCAR los que vienen después en la lista
+  (entre ellos WindowsTextToSpeechSubsystem → no hay voz).
+-->
+<linker>
+  <assembly fullname="MixedReality.Toolkit.Core" preserve="all"/>
+  <assembly fullname="MixedReality.Toolkit.Input" preserve="all"/>
+  <assembly fullname="MixedReality.Toolkit.Speech.Windows" preserve="all"/>
+</linker>

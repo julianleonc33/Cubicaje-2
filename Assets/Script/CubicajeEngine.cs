@@ -11,30 +11,33 @@ public class PlacedPiece
 {
     public string id;          // Identificador de la pieza (ej: "A1")
     public Vector3 localPos;   // Centro en espacio local del pallet
-    public Vector3 localEuler; // Rotación Euler en espacio local (para holograma y operador)
+    public Vector3 localEuler; // Rotación Euler en espacio local (0: el tamaño ya viene orientado en scale)
     public Vector3 scale;      // Dimensiones reales tras aplicar orientación (X=ancho, Y=alto, Z=fondo)
 }
 
 /// <summary>
-/// Motor de cubicaje: calcula posición y orientación de cada pieza dentro del pallet.
+/// Motor de cubicaje greedy en C#: calcula posición y orientación de cada pieza dentro del pallet.
+/// Se usa en el Editor y como respaldo si el motor nativo (CubicajeNativeEngine) no está disponible.
+///
+/// Convención del pallet (espacio local): la cara abierta está en -Z y la pared trasera en +Z.
 ///
 /// Algoritmo: shelf packing greedy 3D.
 ///   1. Ordena piezas por volumen descendente (piezas más grandes primero).
 ///   2. Para cada pieza elige la orientación con menor altura (Y) que quepa.
-///   3. Coloca de izquierda a derecha (X); cuando la fila se llena, avanza en profundidad (Z).
+///   3. Coloca de izquierda a derecha (X); cuando la fila se llena, avanza hacia el frente (-Z).
 ///   4. Cuando la capa se llena, sube a la siguiente capa (Y).
-///   5. La secuencia de ensamblado se ordena: Y asc → Z asc → X asc
-///      (piso primero, fondo antes que frente).
+///   5. La secuencia de ensamblado se ordena con SortByAssemblyOrder
+///      (piso primero, fondo antes que frente, izquierda antes que derecha).
 /// </summary>
 public static class CubicajeEngine
 {
-    // Estructura interna para representar una orientación candidata de una pieza.
+    // Orientación candidata de una pieza: sus dimensiones ya permutadas sobre los ejes del pallet.
+    // No lleva rotación: el holograma es un cubo escalado a (w, h, d), así que no hace falta rotarlo.
     private struct Orientation
     {
         public float w;        // Dimensión en X (ancho real tras rotar)
         public float h;        // Dimensión en Y (alto real tras rotar)
         public float d;        // Dimensión en Z (fondo real tras rotar)
-        public Vector3 euler;  // Rotación Euler correspondiente (aproximada para el holograma)
     }
 
     /// <summary>
@@ -42,10 +45,10 @@ public static class CubicajeEngine
     /// la lista ordenada como secuencia de ensamblado.
     /// </summary>
     /// <param name="pieces">Lista de piezas a colocar (de piezas.json).</param>
-    /// <param name="palletInner">Dimensiones interiores del pallet en metros (X=ancho, Y=alto, Z=fondo).</param>
+    /// <param name="palletInner">Volumen interior del pallet en espacio local (m).</param>
     /// <param name="margin">Margen mínimo entre piezas y entre piezas y paredes (m).</param>
-    /// <returns>Piezas colocadas, ordenadas por secuencia de ensamblado (Y↑ Z↑ X↑).</returns>
-    public static List<PlacedPiece> Solve(List<PieceEntry> pieces, Vector3 palletInner, float margin = 0.002f)
+    /// <returns>Piezas colocadas, ordenadas por secuencia de ensamblado.</returns>
+    public static List<PlacedPiece> Solve(List<PieceEntry> pieces, Bounds palletInner, float margin = 0.002f)
     {
         if (pieces == null || pieces.Count == 0)
         {
@@ -59,17 +62,18 @@ public static class CubicajeEngine
 
         var result = new List<PlacedPiece>();
 
-        // Estado del cursor de colocación (en espacio local del pallet, centro = 0,0,0)
-        float layerYMin  = -palletInner.y / 2f + margin; // borde inferior de la capa actual
-        float layerMaxH  = 0f;                            // altura máxima vista en la capa actual
-        float rowZMin    = -palletInner.z / 2f + margin;  // borde trasero de la fila actual
-        float rowMaxD    = 0f;                            // profundidad máxima vista en la fila actual
-        float cursorX    = -palletInner.x / 2f + margin;  // cursor horizontal dentro de la fila
+        // Estado del cursor de colocación (en espacio local del pallet).
+        // Se parte en la esquina izquierda-piso-fondo y se avanza hacia la cara abierta (-Z).
+        float layerYMin  = palletInner.min.y + margin;  // borde inferior de la capa actual
+        float layerMaxH  = 0f;                          // altura máxima vista en la capa actual
+        float rowZMax    = palletInner.max.z - margin;  // borde trasero de la fila actual
+        float rowMaxD    = 0f;                          // profundidad máxima vista en la fila actual
+        float cursorX    = palletInner.min.x + margin;  // cursor horizontal dentro de la fila
 
         foreach (var piece in sorted)
         {
             // Elegir la orientación con menor altura que quepa en el pallet
-            var ori = PickLowestFittingOrientation(piece, palletInner, margin);
+            var ori = PickLowestFittingOrientation(piece, palletInner.size, margin);
 
             if (ori == null)
             {
@@ -82,27 +86,27 @@ public static class CubicajeEngine
             float pd = ori.Value.d;
 
             // ¿La pieza supera el borde derecho de la fila actual?
-            if (cursorX + pw > palletInner.x / 2f - margin)
+            if (cursorX + pw > palletInner.max.x - margin)
             {
-                // Iniciar nueva fila dentro de la misma capa
-                rowZMin  += rowMaxD + margin;
+                // Iniciar nueva fila dentro de la misma capa, más cerca del frente
+                rowZMax  -= rowMaxD + margin;
                 rowMaxD   = 0f;
-                cursorX   = -palletInner.x / 2f + margin;
+                cursorX   = palletInner.min.x + margin;
             }
 
-            // ¿La fila supera el borde frontal de la capa actual?
-            if (rowZMin + pd > palletInner.z / 2f - margin)
+            // ¿La fila supera la cara abierta (frente) del pallet?
+            if (rowZMax - pd < palletInner.min.z + margin)
             {
-                // Subir a la siguiente capa
+                // Subir a la siguiente capa y volver al fondo
                 layerYMin += layerMaxH + margin;
                 layerMaxH  = 0f;
-                rowZMin    = -palletInner.z / 2f + margin;
+                rowZMax    = palletInner.max.z - margin;
                 rowMaxD    = 0f;
-                cursorX    = -palletInner.x / 2f + margin;
+                cursorX    = palletInner.min.x + margin;
             }
 
             // ¿Hay espacio vertical en la capa?
-            if (layerYMin + ph > palletInner.y / 2f - margin)
+            if (layerYMin + ph > palletInner.max.y - margin)
             {
                 Debug.LogWarning($"[CubicajeEngine] Pieza '{piece.id}': no hay espacio vertical restante. Se omite.");
                 continue;
@@ -111,13 +115,13 @@ public static class CubicajeEngine
             // Centro de la pieza en espacio local del pallet
             float cx = cursorX + pw / 2f;
             float cy = layerYMin + ph / 2f;
-            float cz = rowZMin  + pd / 2f;
+            float cz = rowZMax - pd / 2f;
 
             result.Add(new PlacedPiece
             {
                 id         = piece.id,
                 localPos   = new Vector3(cx, cy, cz),
-                localEuler = ori.Value.euler,
+                localEuler = Vector3.zero,
                 scale      = new Vector3(pw, ph, pd)
             });
 
@@ -127,24 +131,33 @@ public static class CubicajeEngine
             layerMaxH = Mathf.Max(layerMaxH, ph);
         }
 
-        // Ordenar la secuencia de ensamblado:
-        //   Y ascendente → piso antes que techo
-        //   Z ascendente → fondo del pallet antes que frente
-        //   X ascendente → izquierda antes que derecha
-        result.Sort((a, b) =>
-        {
-            int yComp = a.localPos.y.CompareTo(b.localPos.y);
-            if (yComp != 0) return yComp;
-
-            int zComp = a.localPos.z.CompareTo(b.localPos.z);
-            if (zComp != 0) return zComp;
-
-            return a.localPos.x.CompareTo(b.localPos.x);
-        });
+        SortByAssemblyOrder(result);
 
         Debug.Log($"[CubicajeEngine] Solución: {result.Count}/{sorted.Count} piezas colocadas.");
 
         return result;
+    }
+
+    /// <summary>
+    /// Ordena las piezas colocadas en la secuencia de ensamblado. Lo usan ambos motores
+    /// (greedy y nativo) para que el operador siga siempre el mismo criterio:
+    ///   1. Base más baja primero      → piso antes que techo
+    ///   2. Cara trasera más al fondo  → fondo (+Z) antes que frente (-Z)
+    ///   3. Borde izquierdo primero    → izquierda antes que derecha
+    /// Se compara en milímetros enteros para que el ruido de float no altere el orden.
+    /// </summary>
+    public static void SortByAssemblyOrder(List<PlacedPiece> placed)
+    {
+        placed.Sort((a, b) =>
+        {
+            int yComp = ToMm(MinY(a)).CompareTo(ToMm(MinY(b)));
+            if (yComp != 0) return yComp;
+
+            int zComp = ToMm(MaxZ(b)).CompareTo(ToMm(MaxZ(a))); // descendente: fondo primero
+            if (zComp != 0) return zComp;
+
+            return ToMm(MinX(a)).CompareTo(ToMm(MinX(b)));
+        });
     }
 
     // ===== Métodos auxiliares =====
@@ -155,27 +168,38 @@ public static class CubicajeEngine
     private static float PieceVolume(PieceEntry p) =>
         p.ancho_m * p.alto_m * p.fondo_m;
 
+    /// <summary>Base (Y mínima) de una pieza colocada.</summary>
+    private static float MinY(PlacedPiece p) => p.localPos.y - p.scale.y / 2f;
+
+    /// <summary>Cara trasera (Z máxima) de una pieza colocada.</summary>
+    private static float MaxZ(PlacedPiece p) => p.localPos.z + p.scale.z / 2f;
+
+    /// <summary>Borde izquierdo (X mínima) de una pieza colocada.</summary>
+    private static float MinX(PlacedPiece p) => p.localPos.x - p.scale.x / 2f;
+
+    /// <summary>Convierte metros a milímetros enteros (redondeando) para comparar.</summary>
+    private static int ToMm(float meters) => Mathf.RoundToInt(meters * 1000f);
+
     /// <summary>
     /// Elige la orientación con menor altura (Y) entre las que caben en el pallet.
     /// Evalúa las 6 orientaciones posibles de una caja rectangular.
     /// </summary>
     private static Orientation? PickLowestFittingOrientation(
-        PieceEntry p, Vector3 palletInner, float margin)
+        PieceEntry p, Vector3 palletInnerSize, float margin)
     {
         float a = p.ancho_m;
         float b = p.alto_m;
         float c = p.fondo_m;
 
-        // Las 6 permutaciones posibles de (ancho, alto, fondo) sobre los ejes (X, Y, Z),
-        // con su rotación Euler aproximada para orientar el holograma al operador.
+        // Las 6 permutaciones posibles de (ancho, alto, fondo) sobre los ejes (X, Y, Z)
         var candidates = new Orientation[]
         {
-            new Orientation { w=a, h=b, d=c, euler=new Vector3(  0f,   0f,  0f) },
-            new Orientation { w=c, h=b, d=a, euler=new Vector3(  0f,  90f,  0f) },
-            new Orientation { w=a, h=c, d=b, euler=new Vector3( 90f,   0f,  0f) },
-            new Orientation { w=c, h=a, d=b, euler=new Vector3( 90f,  90f,  0f) },
-            new Orientation { w=b, h=a, d=c, euler=new Vector3(  0f,   0f, 90f) },
-            new Orientation { w=b, h=c, d=a, euler=new Vector3( 90f,   0f, 90f) },
+            new Orientation { w=a, h=b, d=c },
+            new Orientation { w=c, h=b, d=a },
+            new Orientation { w=a, h=c, d=b },
+            new Orientation { w=c, h=a, d=b },
+            new Orientation { w=b, h=a, d=c },
+            new Orientation { w=b, h=c, d=a },
         };
 
         Orientation? best = null;
@@ -183,9 +207,9 @@ public static class CubicajeEngine
         foreach (var o in candidates)
         {
             // Verificar que la pieza con este tamaño cabe dentro de los límites del pallet
-            bool fitsX = o.w <= palletInner.x - 2f * margin;
-            bool fitsY = o.h <= palletInner.y - 2f * margin;
-            bool fitsZ = o.d <= palletInner.z - 2f * margin;
+            bool fitsX = o.w <= palletInnerSize.x - 2f * margin;
+            bool fitsY = o.h <= palletInnerSize.y - 2f * margin;
+            bool fitsZ = o.d <= palletInnerSize.z - 2f * margin;
 
             if (!fitsX || !fitsY || !fitsZ)
                 continue;

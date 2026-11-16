@@ -104,3 +104,30 @@ InitTestScene*.unity*
 
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
+
+# ===== CubicajeHL3: archivos locales que no van al repo =====
+
+# Claude Code: instrucciones, memoria y worktrees locales
+CLAUDE.md
+.claude/
+**/memory/
+
+# Respaldos manuales del manifest de paquetes
+/Packages/manifest.json.backup*
+
+# Motor nativo Intento14 original (sin modificar): no lo usa la app
+/Intento14/
+
+# Motor nativo modificado (fuente de CubicajeNative.dll): se sube solo el código fuente
+/Intento14 modificado/.vs/
+/Intento14 modificado/Build/
+/Intento14 modificado/Generated Files/
+/Intento14 modificado/Instances/
+/Intento14 modificado/Intento14/
+/Intento14 modificado/Solutions/
+/Intento14 modificado/obj/
+/Intento14 modificado/x64/
+/Intento14 modificado/Reporte.txt
+*.vcxproj.user
+# La regla *.sln de Unity ignoraría la solución del motor nativo: se exceptúa
+!/Intento14 modificado/Intento14.sln

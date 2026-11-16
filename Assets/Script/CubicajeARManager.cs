@@ -28,8 +28,9 @@ public class CubicajeARManager : MonoBehaviour
 
     // ===== Geometría PALLET =====
     [Header("Pallet")]
-    // 21 x 21 x 21 cm → 0.21 m
-    public Vector3 palletOuterDims = new Vector3(0.21f, 0.21f, 0.21f);
+    [Tooltip("Volumen INTERIOR útil del pallet (m), ya descontadas las paredes. 20.5 x 20.5 x 20.5 cm.")]
+    public Vector3 palletInnerDims = new Vector3(0.205f, 0.205f, 0.205f);
+    [Tooltip("Grosor de las paredes holográficas (m). Se suma por fuera del volumen interior.")]
     public float wallThickness = 0.005f;
     public float baseHeightNudge = 0.0f;   // 0 → apoyado justo encima del QR
 
@@ -63,6 +64,20 @@ public class CubicajeARManager : MonoBehaviour
 
     [Tooltip("Resolución de muestreo por cada segmento de la curva.")]
     public int curveSamplesPerSegment = 30;
+
+    [Header("Voz")]
+    [Tooltip("Guía por voz. Opcional: si está vacío, el armado funciona sin voz.")]
+    public VoiceGuide voiceGuide;
+
+    [Header("Motor de cubicaje")]
+    [Tooltip("Usar el motor nativo Intento14 en el HoloLens. En el Editor siempre se usa el greedy en C#.")]
+    public bool useNativeEngine = true;
+
+    [Tooltip("Tiempo máximo de búsqueda del motor nativo (s). La app queda congelada mientras calcula.")]
+    public int nativeMaxTimeSeconds = 2;
+
+    [Tooltip("Holgura visual entre hologramas vecinos (m). Solo achica lo que se dibuja, no el cálculo.")]
+    public float visualGap = 0.002f;
 
     // ===== Internos AR / escena =====
     private ARSession arSession;
@@ -99,6 +114,9 @@ public class CubicajeARManager : MonoBehaviour
 
     /// <summary>Secuencia de IDs en el orden de ensamblado calculado.</summary>
     private string[] assemblySequence = new string[0];
+
+    /// <summary>IDs de la orden que el motor no pudo meter en el pallet (no caben).</summary>
+    private List<string> unplacedPieceIds = new List<string>();
 
     // ===== Ciclo de vida =====
     void Awake()
@@ -156,14 +174,8 @@ public class CubicajeARManager : MonoBehaviour
             return false;
         }
 
-        // Dimensiones interiores del pallet (igual a las que calcula CreateHollowPallet)
-        var palletInner = new Vector3(
-            palletOuterDims.x - 2f * wallThickness,
-            palletOuterDims.y - wallThickness,
-            palletOuterDims.z - wallThickness
-        );
-
-        placedPieces  = CubicajeEngine.Solve(wrapper.piezas, palletInner, innerMargin);
+        placedPieces = SolvePlacement(wrapper.piezas, ComputeInnerBounds());
+        unplacedPieceIds.Clear();
 
         if (placedPieces.Count < wrapper.piezas.Count)
         {
@@ -171,16 +183,15 @@ public class CubicajeARManager : MonoBehaviour
             foreach (var placed in placedPieces)
                 placedIds.Add(placed.id);
 
-            var missingIds = new List<string>();
             foreach (var piece in wrapper.piezas)
             {
                 if (!placedIds.Contains(piece.id))
-                    missingIds.Add(piece.id);
+                    unplacedPieceIds.Add(piece.id);
             }
 
             Debug.LogWarning($"[CubicajeAR] Armado parcial: no todas las piezas caben en el pallet. " +
                              $"Colocadas={placedPieces.Count}/{wrapper.piezas.Count}. " +
-                             $"Fuera del pallet: {string.Join(", ", missingIds)}. " +
+                             $"Fuera del pallet: {string.Join(", ", unplacedPieceIds)}. " +
                              "La secuencia continuará solo con las piezas colocadas.");
         }
 
@@ -191,6 +202,51 @@ public class CubicajeARManager : MonoBehaviour
         Debug.Log($"[CubicajeAR] Secuencia calculada ({assemblySequence.Length} piezas): " +
                   string.Join(" → ", assemblySequence));
         return true;
+    }
+
+    /// <summary>
+    /// Elige el motor de cubicaje: el nativo (Intento14) en el HoloLens si está habilitado,
+    /// y el greedy en C# en el Editor o si el nativo falla, para no quedar nunca sin secuencia.
+    /// </summary>
+    private List<PlacedPiece> SolvePlacement(List<PieceEntry> pieces, Bounds palletInner)
+    {
+        if (useNativeEngine && CubicajeNativeEngine.IsAvailable)
+        {
+            var nativeResult = CubicajeNativeEngine.Solve(pieces, palletInner, nativeMaxTimeSeconds);
+            if (nativeResult != null)
+            {
+                Debug.Log("[CubicajeAR] Motor usado: nativo (Intento14).");
+                return nativeResult;
+            }
+
+            Debug.LogWarning("[CubicajeAR] El motor nativo falló. Se usa el greedy en C# como respaldo.");
+        }
+
+        Debug.Log("[CubicajeAR] Motor usado: greedy en C#.");
+        return CubicajeEngine.Solve(pieces, palletInner, innerMargin);
+    }
+
+    /// <summary>
+    /// Dimensiones exteriores del pallet holográfico: el volumen interior más las paredes.
+    /// Paredes en los lados (X, ambos), piso (Y, abajo) y pared trasera (Z, atrás); el frente va abierto.
+    /// </summary>
+    private Vector3 PalletOuterDims()
+    {
+        return new Vector3(
+            palletInnerDims.x + 2f * wallThickness,
+            palletInnerDims.y + wallThickness,
+            palletInnerDims.z + wallThickness);
+    }
+
+    /// <summary>
+    /// Volumen interior del pallet en su espacio local. No está centrado en 0: el piso
+    /// lo empuja medio grosor hacia arriba y la pared trasera medio grosor hacia el frente (-Z).
+    /// Lo usan los motores de cubicaje y la trayectoria de entrada de las piezas.
+    /// </summary>
+    private Bounds ComputeInnerBounds()
+    {
+        var center = new Vector3(0f, wallThickness * 0.5f, -wallThickness * 0.5f);
+        return new Bounds(center, palletInnerDims);
     }
 
     void OnEnable()
@@ -264,21 +320,44 @@ public class CubicajeARManager : MonoBehaviour
             return; // ignorar pallet una vez fijado
 
         if (!IsKnownPieceId(qr))
+        {
+            // Pieza de la orden que no cupo: avisar por voz para que el operario la aparte
+            if (unplacedPieceIds.Contains(qr))
+            {
+                Debug.Log($"[CubicajeAR] QR '{qr}' ignorado: la pieza no cabe en el pallet.");
+                Speak(BuildUnplacedPhrase(new List<string> { qr }));
+                return;
+            }
+
+            // QR ajeno a la orden
+            Debug.Log($"[CubicajeAR] QR '{qr}' ignorado: no está en la secuencia de armado.");
             return;
+        }
 
         if (seqIndex >= assemblySequence.Length) return;
+
+        if (IsAlreadyPlaced(qr))
+        {
+            // El QR de una pieza recién colocada suele seguir a la vista y se relee
+            // al pasar el cooldown: no es un error del operario, se ignora en silencio.
+            Debug.Log($"[CubicajeAR] QR '{qr}' ignorado: pieza ya colocada.");
+            return;
+        }
 
         string expectedId = assemblySequence[seqIndex];
 
         if (qr != expectedId)
         {
             // incorrecta → holograma rojo
+            Debug.LogWarning($"[CubicajeAR] Pieza INCORRECTA: escaneada={qr}, esperada={expectedId} {StepLabel()}");
+            Speak($"Pieza incorrecta. La siguiente es {expectedId}");
             var wrongDef = FindPlacedById(qr);
             SpawnErrorAtMarker(m, wrongDef);
             return;
         }
 
         // correcta → holograma verde que viaja curvado hacia el pallet
+        Debug.Log($"[CubicajeAR] Pieza CORRECTA: {qr} {StepLabel()} — viajando a su slot.");
         var def = FindPlacedById(expectedId);
         HandleCorrectPiece(m, def);
     }
@@ -294,6 +373,8 @@ public class CubicajeARManager : MonoBehaviour
 
         var qrPos = m.transform.position;
         var qrYaw = Quaternion.Euler(0f, m.transform.rotation.eulerAngles.y, 0f);
+
+        var palletOuterDims = PalletOuterDims();
 
         pallet = CreateHollowPallet("PALLET", palletOuterDims, wallThickness,
                                     palletWallColor, palletFloorColor,
@@ -320,6 +401,14 @@ public class CubicajeARManager : MonoBehaviour
             pallet.AddComponent<ARAnchor>();
 
         StartCoroutine(AnimatePalletIn());
+
+        // Guía por voz: confirmar pallet y arrancar diciendo la primera pieza,
+        // para que el operario no tenga que adivinar por prueba y error.
+        Speak("Pallet escaneado");
+        if (unplacedPieceIds.Count > 0)
+            Speak(BuildUnplacedPhrase(unplacedPieceIds));
+        if (assemblySequence.Length > 0)
+            Speak($"Primera pieza: {assemblySequence[0]}");
 
         state = State.PalletLocked;
     }
@@ -375,7 +464,7 @@ public class CubicajeARManager : MonoBehaviour
         right.GetComponent<Collider>().enabled = false;
 
         floor = baseGO.transform;
-        inner = new Bounds(Vector3.zero, new Vector3(outer.x - 2 * t, outer.y - t, outer.z - t));
+        inner = ComputeInnerBounds();
         backRenderer = backR;
         return root;
     }
@@ -424,6 +513,47 @@ public class CubicajeARManager : MonoBehaviour
         };
     }
 
+    /// <summary>
+    /// Pide a la guía de voz que diga una frase. Si no hay VoiceGuide asignado,
+    /// no hace nada: el armado sigue funcionando sin voz.
+    /// </summary>
+    private void Speak(string phrase)
+    {
+        if (voiceGuide != null)
+            voiceGuide.Say(phrase);
+    }
+
+    /// <summary>
+    /// True si la pieza ya fue colocada, es decir, está antes del paso actual en la secuencia.
+    /// </summary>
+    private bool IsAlreadyPlaced(string id)
+    {
+        int index = System.Array.IndexOf(assemblySequence, id);
+        return index >= 0 && index < seqIndex;
+    }
+
+    /// <summary>
+    /// Arma la frase de voz para piezas que no caben en el pallet.
+    /// Ej.: "La pieza A6 no cabe en el pallet" / "Las piezas A6 y B2 no caben en el pallet".
+    /// </summary>
+    private string BuildUnplacedPhrase(List<string> ids)
+    {
+        if (ids.Count == 1)
+            return $"La pieza {ids[0]} no cabe en el pallet";
+
+        string allButLast = string.Join(", ", ids.GetRange(0, ids.Count - 1));
+        return $"Las piezas {allButLast} y {ids[ids.Count - 1]} no caben en el pallet";
+    }
+
+    /// <summary>
+    /// Devuelve el paso actual de la secuencia como texto, ej. "(paso 3/11)".
+    /// Se usa solo en los logs para ubicar cada escaneo dentro del armado.
+    /// </summary>
+    private string StepLabel()
+    {
+        return $"(paso {seqIndex + 1}/{assemblySequence.Length})";
+    }
+
     private bool IsKnownPieceId(string id)
     {
         foreach (var p in placedPieces)
@@ -466,13 +596,21 @@ public class CubicajeARManager : MonoBehaviour
             () =>
             {
                 seqIndex++;
+                Debug.Log($"[CubicajeAR] Pieza {def.id} colocada en su slot ({seqIndex}/{assemblySequence.Length}).");
                 if (seqIndex >= assemblySequence.Length)
                 {
+                    Debug.Log($"[CubicajeAR] SECUENCIA COMPLETADA: {assemblySequence.Length} piezas colocadas. Escaneo de QR desactivado.");
+                    Speak("Pallet completo");
                     state = State.Done;
                     StartCoroutine(PalletCompletedFeedback());
                     markerMgr.enabled = false;
                 }
-                // si aún faltan piezas, el holograma se queda en su slot
+                else
+                {
+                    // si aún faltan piezas, el holograma se queda en su slot
+                    // y se anuncia la siguiente (justo cuando se acepta su escaneo)
+                    Speak($"Siguiente pieza: {assemblySequence[seqIndex]}");
+                }
             }
         ));
     }
@@ -483,7 +621,7 @@ public class CubicajeARManager : MonoBehaviour
         go.name = d.id + "_TRAVEL";
         go.transform.position   = worldPos;
         go.transform.rotation   = worldRot;
-        go.transform.localScale = d.scale;
+        go.transform.localScale = VisualScale(d.scale);
 
         var shader = Shader.Find("Legacy Shaders/Transparent/Diffuse")
                      ?? Shader.Find("Legacy Shaders/Diffuse");
@@ -494,6 +632,18 @@ public class CubicajeARManager : MonoBehaviour
         go.GetComponent<Collider>().enabled = false;
 
         return go;
+    }
+
+    /// <summary>
+    /// Tamaño con el que se dibuja una pieza: su tamaño real menos visualGap, para que
+    /// dos hologramas verdes pegados (el motor nativo no deja margen) se vean separados.
+    /// </summary>
+    private Vector3 VisualScale(Vector3 realScale)
+    {
+        return new Vector3(
+            Mathf.Max(realScale.x - visualGap, 0.001f),
+            Mathf.Max(realScale.y - visualGap, 0.001f),
+            Mathf.Max(realScale.z - visualGap, 0.001f));
     }
 
     private void SpawnErrorAtMarker(ARMarker marker, PlacedPiece def)
@@ -557,16 +707,16 @@ public class CubicajeARManager : MonoBehaviour
         var points = new List<Vector3>();
 
         // Punto de entrada por delante del pallet (z negativo en local, frontal abierto)
-        float frontZ = -palletOuterDims.z * 0.5f - entryFrontOffset;
+        float frontZ = palletInnerBounds.min.z - entryFrontOffset;
 
         // Mantener altura parecida a la del destino pero dentro de los márgenes
         float yLocal = Mathf.Clamp(def.localPos.y,
-            -palletInnerBounds.extents.y + innerMargin,
-            palletInnerBounds.extents.y - innerMargin);
+            palletInnerBounds.min.y + innerMargin,
+            palletInnerBounds.max.y - innerMargin);
 
         float xLocal = Mathf.Clamp(def.localPos.x,
-            -palletInnerBounds.extents.x + innerMargin,
-            palletInnerBounds.extents.x - innerMargin);
+            palletInnerBounds.min.x + innerMargin,
+            palletInnerBounds.max.x - innerMargin);
 
         Vector3 entryLocal = new Vector3(xLocal, yLocal, frontZ);
         Vector3 entryWorld = pallet.transform.TransformPoint(entryLocal);

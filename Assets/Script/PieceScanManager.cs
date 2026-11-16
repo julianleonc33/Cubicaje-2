@@ -43,6 +43,11 @@ public class PieceScanManager : MonoBehaviour
     [Tooltip("Segundos al inicio en que se ignoran lecturas.")]
     public float coldStartIgnore = 0.5f;
 
+    // ===== Voz =====
+    [Header("Voz")]
+    [Tooltip("Guía por voz. Opcional: si está vacío, el escaneo funciona sin voz.")]
+    public VoiceGuide voiceGuide;
+
     // ===== Internos =====
     private float appStartTime;
     private string lastQR;
@@ -133,6 +138,10 @@ public class PieceScanManager : MonoBehaviour
 
         // Auto-guardar tras el escaneo
         SaveToJson();
+
+        // Confirmación por voz de que la orden quedó cargada
+        if (voiceGuide != null)
+            voiceGuide.Say("Orden escaneada");
 
         // Mostrar holograma de confirmación (usando la primera pieza como referencia visual)
         SpawnScanHologram(m, entries[0]);
