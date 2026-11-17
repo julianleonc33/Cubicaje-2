@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
+using UnityEngine.Serialization;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 using Microsoft.MixedReality.OpenXR;
@@ -69,12 +70,21 @@ public class CubicajeARManager : MonoBehaviour
     [Tooltip("Guía por voz. Opcional: si está vacío, el armado funciona sin voz.")]
     public VoiceGuide voiceGuide;
 
-    [Header("Motor de cubicaje")]
-    [Tooltip("Usar el motor nativo Intento14 en el HoloLens. En el Editor siempre se usa el greedy en C#.")]
-    public bool useNativeEngine = true;
+    /// <summary>Motores de cubicaje disponibles. Si el elegido falla, se usa el greedy.</summary>
+    public enum CubicajeMotor
+    {
+        CSharpIntento14,   // Intento14 traducido a C#: corre en HoloLens y en el Editor
+        NativoIntento14,   // CubicajeNative.dll: solo en el build de HoloLens
+        Greedy             // greedy simple en C# (CubicajeEngine)
+    }
 
-    [Tooltip("Tiempo máximo de búsqueda del motor nativo (s). La app queda congelada mientras calcula.")]
-    public int nativeMaxTimeSeconds = 2;
+    [Header("Motor de cubicaje")]
+    [Tooltip("Motor a usar al escanear el pallet. Si falla (o el nativo no existe, como en el Editor), se usa el greedy.")]
+    public CubicajeMotor motorCubicaje = CubicajeMotor.CSharpIntento14;
+
+    [Tooltip("Tiempo máximo de búsqueda de Intento14 (s), en C# o nativo. La app queda congelada mientras calcula.")]
+    [FormerlySerializedAs("nativeMaxTimeSeconds")]
+    public int maxSolveSeconds = 2;
 
     [Tooltip("Holgura visual entre hologramas vecinos (m). Solo achica lo que se dibuja, no el cálculo.")]
     public float visualGap = 0.002f;
@@ -205,25 +215,59 @@ public class CubicajeARManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Elige el motor de cubicaje: el nativo (Intento14) en el HoloLens si está habilitado,
-    /// y el greedy en C# en el Editor o si el nativo falla, para no quedar nunca sin secuencia.
+    /// Resuelve el cubicaje con el motor elegido en el Inspector (motorCubicaje).
+    /// Si ese motor falla o no está disponible, usa el greedy para no quedar nunca sin secuencia.
     /// </summary>
     private List<PlacedPiece> SolvePlacement(List<PieceEntry> pieces, Bounds palletInner)
     {
-        if (useNativeEngine && CubicajeNativeEngine.IsAvailable)
-        {
-            var nativeResult = CubicajeNativeEngine.Solve(pieces, palletInner, nativeMaxTimeSeconds);
-            if (nativeResult != null)
-            {
-                Debug.Log("[CubicajeAR] Motor usado: nativo (Intento14).");
-                return nativeResult;
-            }
-
-            Debug.LogWarning("[CubicajeAR] El motor nativo falló. Se usa el greedy en C# como respaldo.");
-        }
+        List<PlacedPiece> result = TrySelectedEngine(pieces, palletInner);
+        if (result != null)
+            return result;
 
         Debug.Log("[CubicajeAR] Motor usado: greedy en C#.");
         return CubicajeEngine.Solve(pieces, palletInner, innerMargin);
+    }
+
+    /// <summary>
+    /// Llama al motor Intento14 elegido (C# o nativo). Devuelve null si se eligió el greedy,
+    /// si el motor falló o si no está disponible en esta plataforma.
+    /// </summary>
+    private List<PlacedPiece> TrySelectedEngine(List<PieceEntry> pieces, Bounds palletInner)
+    {
+        switch (motorCubicaje)
+        {
+            case CubicajeMotor.CSharpIntento14:
+            {
+                var csharpResult = CubicajeCSharpEngine.Solve(pieces, palletInner, maxSolveSeconds);
+                if (csharpResult != null)
+                {
+                    Debug.Log("[CubicajeAR] Motor usado: C# (Intento14).");
+                    return csharpResult;
+                }
+                Debug.LogWarning("[CubicajeAR] El motor C# falló. Se usa el greedy en C# como respaldo.");
+                return null;
+            }
+
+            case CubicajeMotor.NativoIntento14:
+            {
+                if (!CubicajeNativeEngine.IsAvailable)
+                {
+                    Debug.LogWarning("[CubicajeAR] El motor nativo solo existe en el build de HoloLens. Se usa el greedy.");
+                    return null;
+                }
+                var nativeResult = CubicajeNativeEngine.Solve(pieces, palletInner, maxSolveSeconds);
+                if (nativeResult != null)
+                {
+                    Debug.Log("[CubicajeAR] Motor usado: nativo (Intento14).");
+                    return nativeResult;
+                }
+                Debug.LogWarning("[CubicajeAR] El motor nativo falló. Se usa el greedy en C# como respaldo.");
+                return null;
+            }
+
+            default:
+                return null;   // Greedy elegido explícitamente
+        }
     }
 
     /// <summary>
