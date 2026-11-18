@@ -55,7 +55,69 @@ public static class CubicajeCSharpEngine
         return result;
     }
 
+    /// <summary>
+    /// Bin packing (variante ③): reparte TODAS las piezas en el menor número de pallets
+    /// idénticos. Devuelve un plan por pallet (cada uno en secuencia de ensamblado),
+    /// o null si el motor falló. Las piezas que no caben ni en un pallet vacío no aparecen.
+    /// </summary>
+    /// <param name="pieces">Lista de piezas a colocar (de piezas.json).</param>
+    /// <param name="palletInner">Volumen interior de un pallet en espacio local (m).</param>
+    /// <param name="maxTimeSeconds">Tiempo máximo de búsqueda del motor (s).</param>
+    public static List<List<PlacedPiece>> SolveBinPacking(List<PieceEntry> pieces, Bounds palletInner, float maxTimeSeconds)
+    {
+        if (pieces == null || pieces.Count == 0)
+            return new List<List<PlacedPiece>>();
+
+        ResultadoBinPacking resultado;
+        try
+        {
+            resultado = BinPackingSolver.Resolver(
+                MetersToMmFloor(palletInner.size.x),
+                MetersToMmFloor(palletInner.size.z),
+                MetersToMmFloor(palletInner.size.y),
+                BuildInput(pieces),
+                maxTimeSeconds);
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[CubicajeBinPacking] El motor lanzó una excepción: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+
+        LogBinPackingResult(resultado, pieces.Count);
+
+        var plans = new List<List<PlacedPiece>>(resultado.NumContenedores);
+        foreach (ResultadoCubicaje contenedor in resultado.Contenedores)
+        {
+            List<PlacedPiece> plan = ConvertOutput(contenedor, pieces, palletInner);
+            CubicajeEngine.SortByAssemblyOrder(plan);
+            plans.Add(plan);
+        }
+        return plans;
+    }
+
     // ===== Métodos auxiliares =====
+
+    /// <summary>
+    /// Deja en el log el resultado del bin packing: número de pallets frente a la cota
+    /// inferior por volumen, utilización de cada pallet y rendimiento (iter/s).
+    /// </summary>
+    private static void LogBinPackingResult(ResultadoBinPacking r, int totalPieces)
+    {
+        int colocadas = 0;
+        var utilizaciones = new List<string>();
+        foreach (ResultadoCubicaje c in r.Contenedores)
+        {
+            colocadas += c.Colocadas.Count;
+            utilizaciones.Add($"{c.Colocadas.Count} piezas {c.Utilizacion:P1}");
+        }
+
+        double iterPerSecond = r.DuracionSeg > 0 ? r.Iteraciones / r.DuracionSeg : 0;
+        Debug.Log($"[CubicajeBinPacking] Solución: {r.NumContenedores} pallets (cota inferior {r.CotaInferior}), " +
+                  $"colocadas {colocadas}/{totalPieces}. Por pallet: [{string.Join(" | ", utilizaciones)}]  " +
+                  $"Iteraciones={r.Iteraciones} (búsqueda local={r.IteracionesBusquedaLocal})  " +
+                  $"Duración={r.DuracionSeg:F2}s  ({iterPerSecond:F0} iter/s)");
+    }
 
     /// <summary>
     /// Convierte cada PieceEntry a una pieza del motor, en mm y con el alto en z.
