@@ -626,8 +626,9 @@ MonoBehaviour:
   curveDropFactor: 0.15
   curveSamplesPerSegment: 30
   voiceGuide: {fileID: 734476983}
-  useNativeEngine: 1
-  nativeMaxTimeSeconds: 2
+  motorCubicaje: 3
+  maxSolveSeconds: 2
+  nextPalletDelaySeconds: 3
   visualGap: 0.002
 --- !u!114 &741667703
 MonoBehaviour:
