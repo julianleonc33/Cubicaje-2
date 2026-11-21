@@ -61,8 +61,30 @@ La app usa la voz **Microsoft Helena (es-ES)**. El HoloLens debe tener instalado
 
 ## Motor de cubicaje
 
-- **Nativo (Intento14)**: `Assets/Plugins/WSA/ARM64/CubicajeNative.dll`, ya compilada e incluida. Se usa en el HoloLens.
-- **Greedy en C#** (`CubicajeEngine.cs`): se usa en el Editor y como respaldo si falla el nativo.
+Se elige en el Inspector: `MRTK XR Rig` → *Cubicaje AR Manager* → **Motor Cubicaje** (tiempo de búsqueda en *Max Solve Seconds*).
+
+| Opción | Qué hace |
+|---|---|
+| **C Sharp Intento14** | Intento14 traducido a C# (`Assets/Script/CubicajeCSharp/`, del repo Cubicaje-HL2-Engine). Un pallet. Corre en el HoloLens y en el Editor. |
+| **Nativo Intento14** | `Assets/Plugins/WSA/ARM64/CubicajeNative.dll`. Un pallet. Solo en el build del HoloLens. |
+| **Greedy** | Greedy simple en C# (`CubicajeEngine.cs`). También es el respaldo si el motor elegido falla. |
+| **Bin Packing C Sharp** | Reparte toda la orden en el menor número de pallets iguales; se arman **uno tras otro** con el mismo QR `PALLET`. |
+
+### Multi-pallet (Bin Packing C Sharp)
+
+1. Al escanear `PALLET` la voz dice cuántos pallets usa la orden y la primera pieza del pallet 1.
+2. Al completar un pallet: "Pallet 1 completo. Coloque el pallet 2 y escanéelo". Durante *Next Pallet Delay Seconds* (3 s) se ignora el QR `PALLET`, para que el QR del pallet terminado no ancle el siguiente al instante.
+3. Al escanear `PALLET` de nuevo, el pallet holográfico anterior se borra y se ancla el siguiente sobre ese QR.
+4. Si se escanea una pieza de un pallet posterior: "La pieza X va en el pallet N". Las de pallets ya armados se ignoran.
+5. Al terminar el último: "Pallet completo. Orden completa".
+
+### Versiones (git)
+
+| Tag / rama | Contenido |
+|---|---|
+| `v1.0-voz-motor-nativo` | Motor nativo + guía por voz |
+| `v1.1-motor-csharp` | Motor Intento14 en C# (un pallet) |
+| rama `motor-binpacking` | Multi-pallet (en prueba) |
 
 ### Recompilar la DLL nativa (solo si se modifica el motor)
 
@@ -93,6 +115,8 @@ El código fuente está en `Intento14 modificado/` (`Intento14.cpp`, `CubicajeAp
 | `StartMenuManager.cs` | Menú inicial (Aceptar / Cancelar); habilita el escaneo |
 | `PieceScanManager.cs` | Lee el QR maestro y guarda `piezas.json` |
 | `CubicajeARManager.cs` | Pallet, motor de cubicaje, secuencia de armado y hologramas |
+| `CubicajeCSharpEngine.cs` | Puente con el motor Intento14 en C# (un pallet y bin packing) |
+| `CubicajeCSharp/` | Motor Intento14 traducido a C# |
 | `CubicajeNativeEngine.cs` | Puente (P/Invoke) con la DLL nativa |
 | `CubicajeEngine.cs` | Motor greedy en C# y orden de armado |
 | `VoiceGuide.cs` | Guía por voz (texto a voz de MRTK3) |
@@ -100,4 +124,4 @@ El código fuente está en `Intento14 modificado/` (`Intento14.cpp`, `CubicajeAp
 
 ## Depuración
 
-Los logs se descargan desde el **Device Portal → System → File explorer → LocalAppData → (paquete de la app) → TempState** (`UnityPlayer.log` y `UnityPlayer-prev.log`). Prefijos útiles para filtrar: `[CubicajeAR]`, `[PieceScan]`, `[VoiceGuide]`, `[CubicajeNative]`.
+Los logs se descargan desde el **Device Portal → System → File explorer → LocalAppData → (paquete de la app) → TempState** (`UnityPlayer.log` y `UnityPlayer-prev.log`). Prefijos útiles para filtrar: `[CubicajeAR]`, `[PieceScan]`, `[VoiceGuide]`, `[CubicajeCSharp]`, `[CubicajeBinPacking]`, `[CubicajeNative]`.

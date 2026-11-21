@@ -75,7 +75,8 @@ public class CubicajeARManager : MonoBehaviour
     {
         CSharpIntento14,   // Intento14 traducido a C#: corre en HoloLens y en el Editor
         NativoIntento14,   // CubicajeNative.dll: solo en el build de HoloLens
-        Greedy             // greedy simple en C# (CubicajeEngine)
+        Greedy,            // greedy simple en C# (CubicajeEngine)
+        BinPackingCSharp   // varios pallets, uno tras otro (BinPackingSolver en C#). Va al final: Unity guarda el enum como entero
     }
 
     [Header("Motor de cubicaje")]
@@ -85,6 +86,10 @@ public class CubicajeARManager : MonoBehaviour
     [Tooltip("Tiempo máximo de búsqueda de Intento14 (s), en C# o nativo. La app queda congelada mientras calcula.")]
     [FormerlySerializedAs("nativeMaxTimeSeconds")]
     public int maxSolveSeconds = 2;
+
+    [Tooltip("Solo multi-pallet: segundos tras completar un pallet en los que se ignora el QR PALLET, " +
+             "para que el QR del pallet recién terminado (aún a la vista) no ancle el siguiente al instante.")]
+    public float nextPalletDelaySeconds = 3f;
 
     [Tooltip("Holgura visual entre hologramas vecinos (m). Solo achica lo que se dibuja, no el cálculo.")]
     public float visualGap = 0.002f;
@@ -100,7 +105,7 @@ public class CubicajeARManager : MonoBehaviour
 
     private float appStartTime;
 
-    private enum State { WaitingPallet, PalletLocked, Done }
+    private enum State { WaitingPallet, PalletLocked, WaitingNextPallet, Done }
     private State state = State.WaitingPallet;
 
     private int seqIndex = 0;
@@ -127,6 +132,15 @@ public class CubicajeARManager : MonoBehaviour
 
     /// <summary>IDs de la orden que el motor no pudo meter en el pallet (no caben).</summary>
     private List<string> unplacedPieceIds = new List<string>();
+
+    /// <summary>Plan de cada pallet (multi-pallet). Con los motores de un pallet tiene un solo elemento.</summary>
+    private List<List<PlacedPiece>> palletPlans = new List<List<PlacedPiece>>();
+
+    /// <summary>Índice del pallet que se está armando dentro de palletPlans.</summary>
+    private int currentPalletIndex = 0;
+
+    /// <summary>Momento (Time.time) en que se completó el último pallet; para nextPalletDelaySeconds.</summary>
+    private float palletCompletedTime = -999f;
 
     // ===== Ciclo de vida =====
     void Awake()
@@ -184,34 +198,91 @@ public class CubicajeARManager : MonoBehaviour
             return false;
         }
 
-        placedPieces = SolvePlacement(wrapper.piezas, ComputeInnerBounds());
-        unplacedPieceIds.Clear();
+        palletPlans = SolveAllPallets(wrapper.piezas, ComputeInnerBounds());
+        ComputeUnplaced(wrapper.piezas);
+        LoadPalletPlan(0);
+        return true;
+    }
 
-        if (placedPieces.Count < wrapper.piezas.Count)
+    /// <summary>
+    /// Calcula el plan de cada pallet. Con BinPackingCSharp reparte la orden en varios pallets;
+    /// con los demás motores (o si el bin packing falla) devuelve un solo pallet.
+    /// </summary>
+    private List<List<PlacedPiece>> SolveAllPallets(List<PieceEntry> pieces, Bounds palletInner)
+    {
+        if (motorCubicaje == CubicajeMotor.BinPackingCSharp)
         {
-            var placedIds = new HashSet<string>();
-            foreach (var placed in placedPieces)
+            var plans = CubicajeCSharpEngine.SolveBinPacking(pieces, palletInner, maxSolveSeconds);
+            if (plans != null && plans.Count > 0)
+            {
+                Debug.Log($"[CubicajeAR] Motor usado: bin packing en C# ({plans.Count} pallets).");
+                return plans;
+            }
+            Debug.LogWarning("[CubicajeAR] El bin packing falló. Se arma un solo pallet con el greedy.");
+        }
+
+        return new List<List<PlacedPiece>> { SolvePlacement(pieces, palletInner) };
+    }
+
+    /// <summary>
+    /// Llena unplacedPieceIds con las piezas de la orden que no quedaron en ningún pallet
+    /// (no caben) y lo deja en el log.
+    /// </summary>
+    private void ComputeUnplaced(List<PieceEntry> pieces)
+    {
+        unplacedPieceIds.Clear();
+        var placedIds = new HashSet<string>();
+        foreach (var plan in palletPlans)
+            foreach (var placed in plan)
                 placedIds.Add(placed.id);
 
-            foreach (var piece in wrapper.piezas)
-            {
-                if (!placedIds.Contains(piece.id))
-                    unplacedPieceIds.Add(piece.id);
-            }
+        foreach (var piece in pieces)
+        {
+            if (!placedIds.Contains(piece.id))
+                unplacedPieceIds.Add(piece.id);
+        }
 
+        if (unplacedPieceIds.Count > 0)
             Debug.LogWarning($"[CubicajeAR] Armado parcial: no todas las piezas caben en el pallet. " +
-                             $"Colocadas={placedPieces.Count}/{wrapper.piezas.Count}. " +
+                             $"Colocadas={placedIds.Count}/{pieces.Count}. " +
                              $"Fuera del pallet: {string.Join(", ", unplacedPieceIds)}. " +
                              "La secuencia continuará solo con las piezas colocadas.");
-        }
+    }
+
+    /// <summary>
+    /// Activa el plan del pallet indicado: sus piezas pasan a ser la secuencia actual
+    /// y el armado arranca desde el primer paso.
+    /// </summary>
+    private void LoadPalletPlan(int index)
+    {
+        currentPalletIndex = index;
+        placedPieces = palletPlans[index];
+        seqIndex = 0;
 
         assemblySequence = new string[placedPieces.Count];
         for (int i = 0; i < placedPieces.Count; i++)
             assemblySequence[i] = placedPieces[i].id;
 
-        Debug.Log($"[CubicajeAR] Secuencia calculada ({assemblySequence.Length} piezas): " +
+        Debug.Log($"[CubicajeAR] Pallet {index + 1}/{palletPlans.Count}: " +
+                  $"secuencia calculada ({assemblySequence.Length} piezas): " +
                   string.Join(" → ", assemblySequence));
-        return true;
+    }
+
+    /// <summary>True si queda al menos un pallet por armar después del actual.</summary>
+    private bool HasNextPallet()
+    {
+        return currentPalletIndex + 1 < palletPlans.Count;
+    }
+
+    /// <summary>
+    /// Índice del pallet al que pertenece una pieza, o -1 si no está en ningún plan.
+    /// </summary>
+    private int FindPalletOfPiece(string id)
+    {
+        for (int p = 0; p < palletPlans.Count; p++)
+            foreach (var placed in palletPlans[p])
+                if (placed.id == id) return p;
+        return -1;
     }
 
     /// <summary>
@@ -357,6 +428,14 @@ public class CubicajeARManager : MonoBehaviour
             return;
         }
 
+        // Multi-pallet: esperando el pallet siguiente
+        if (state == State.WaitingNextPallet)
+        {
+            if (qr == "PALLET" || qr == "PALLET.")
+                TryProcessNextPallet(m);
+            return;
+        }
+
         // Después de fijar el pallet
         if (state != State.PalletLocked) return;
 
@@ -365,6 +444,10 @@ public class CubicajeARManager : MonoBehaviour
 
         if (!IsKnownPieceId(qr))
         {
+            // Multi-pallet: la pieza pertenece a otro pallet de la orden
+            if (HandlePieceOfOtherPallet(qr))
+                return;
+
             // Pieza de la orden que no cupo: avisar por voz para que el operario la aparte
             if (unplacedPieceIds.Contains(qr))
             {
@@ -407,6 +490,10 @@ public class CubicajeARManager : MonoBehaviour
     }
 
     // ===== Pallet =====
+    /// <summary>
+    /// Primer escaneo del QR PALLET: calcula el plan de todos los pallets, ancla el pallet 1
+    /// y anuncia por voz el inicio del armado.
+    /// </summary>
     private void ProcessPalletMarker(ARMarker m)
     {
         if (pallet != null) return;
@@ -415,6 +502,76 @@ public class CubicajeARManager : MonoBehaviour
         // cuando ya se escanearon todas las piezas en la misma sesión.
         if (!LoadAndSolve()) return;
 
+        SpawnPallet(m);
+
+        // Guía por voz: confirmar pallet y arrancar diciendo la primera pieza,
+        // para que el operario no tenga que adivinar por prueba y error.
+        Speak("Pallet escaneado");
+        if (palletPlans.Count > 1)
+            Speak($"La orden usa {palletPlans.Count} pallets");
+        if (unplacedPieceIds.Count > 0)
+            Speak(BuildUnplacedPhrase(unplacedPieceIds));
+        if (assemblySequence.Length > 0)
+            Speak($"Primera pieza: {assemblySequence[0]}");
+
+        state = State.PalletLocked;
+    }
+
+    /// <summary>
+    /// Multi-pallet: escaneo de PALLET después de completar un pallet. Ignora el QR durante
+    /// nextPalletDelaySeconds (el QR del pallet terminado suele seguir a la vista); luego
+    /// reemplaza el pallet holográfico por el siguiente y anuncia su primera pieza.
+    /// </summary>
+    private void TryProcessNextPallet(ARMarker m)
+    {
+        if (Time.time - palletCompletedTime < nextPalletDelaySeconds)
+        {
+            Debug.Log("[CubicajeAR] QR PALLET ignorado: aún no pasa el retardo para el pallet siguiente.");
+            return;
+        }
+
+        ClearCurrentPallet();
+        LoadPalletPlan(currentPalletIndex + 1);
+        SpawnPallet(m);
+
+        int palletNumber = currentPalletIndex + 1;
+        Debug.Log($"[CubicajeAR] Pallet {palletNumber}/{palletPlans.Count} anclado.");
+        Speak($"Pallet {palletNumber} escaneado");
+        if (assemblySequence.Length > 0)
+            Speak($"Primera pieza: {assemblySequence[0]}");
+
+        state = State.PalletLocked;
+    }
+
+    /// <summary>
+    /// Borra el pallet holográfico terminado y el último holograma de pieza,
+    /// para dejar la escena lista para el pallet siguiente.
+    /// </summary>
+    private void ClearCurrentPallet()
+    {
+        if (currentTravelRoutine != null)
+        {
+            StopCoroutine(currentTravelRoutine);
+            currentTravelRoutine = null;
+        }
+        if (currentTravelPiece != null)
+        {
+            Destroy(currentTravelPiece);
+            currentTravelPiece = null;
+        }
+        if (pallet != null)
+        {
+            Destroy(pallet);
+            pallet = null;
+        }
+    }
+
+    /// <summary>
+    /// Crea el pallet hueco sobre el QR escaneado, con el frente hacia la cámara,
+    /// lo ancla en el mundo (ARAnchor) y lanza la animación de entrada.
+    /// </summary>
+    private void SpawnPallet(ARMarker m)
+    {
         var qrPos = m.transform.position;
         var qrYaw = Quaternion.Euler(0f, m.transform.rotation.eulerAngles.y, 0f);
 
@@ -445,16 +602,6 @@ public class CubicajeARManager : MonoBehaviour
             pallet.AddComponent<ARAnchor>();
 
         StartCoroutine(AnimatePalletIn());
-
-        // Guía por voz: confirmar pallet y arrancar diciendo la primera pieza,
-        // para que el operario no tenga que adivinar por prueba y error.
-        Speak("Pallet escaneado");
-        if (unplacedPieceIds.Count > 0)
-            Speak(BuildUnplacedPhrase(unplacedPieceIds));
-        if (assemblySequence.Length > 0)
-            Speak($"Primera pieza: {assemblySequence[0]}");
-
-        state = State.PalletLocked;
     }
 
     private GameObject CreateHollowPallet(
@@ -598,6 +745,28 @@ public class CubicajeARManager : MonoBehaviour
         return $"(paso {seqIndex + 1}/{assemblySequence.Length})";
     }
 
+    /// <summary>
+    /// Multi-pallet: si la pieza pertenece a otro pallet de la orden, lo maneja y devuelve true.
+    /// Pallet posterior → aviso por voz de a qué pallet va. Pallet anterior → ya colocada (silencio).
+    /// </summary>
+    private bool HandlePieceOfOtherPallet(string id)
+    {
+        int palletIndex = FindPalletOfPiece(id);
+        if (palletIndex < 0 || palletIndex == currentPalletIndex)
+            return false;
+
+        if (palletIndex < currentPalletIndex)
+        {
+            Debug.Log($"[CubicajeAR] QR '{id}' ignorado: pieza ya colocada en el pallet {palletIndex + 1}.");
+            return true;
+        }
+
+        Debug.Log($"[CubicajeAR] QR '{id}' ignorado: la pieza va en el pallet {palletIndex + 1} " +
+                  $"(se está armando el pallet {currentPalletIndex + 1}).");
+        Speak($"La pieza {id} va en el pallet {palletIndex + 1}");
+        return true;
+    }
+
     private bool IsKnownPieceId(string id)
     {
         foreach (var p in placedPieces)
@@ -643,11 +812,10 @@ public class CubicajeARManager : MonoBehaviour
                 Debug.Log($"[CubicajeAR] Pieza {def.id} colocada en su slot ({seqIndex}/{assemblySequence.Length}).");
                 if (seqIndex >= assemblySequence.Length)
                 {
-                    Debug.Log($"[CubicajeAR] SECUENCIA COMPLETADA: {assemblySequence.Length} piezas colocadas. Escaneo de QR desactivado.");
-                    Speak("Pallet completo");
-                    state = State.Done;
-                    StartCoroutine(PalletCompletedFeedback());
-                    markerMgr.enabled = false;
+                    if (HasNextPallet())
+                        OnPalletCompletedWithMoreLeft();
+                    else
+                        OnOrderCompleted();
                 }
                 else
                 {
@@ -657,6 +825,34 @@ public class CubicajeARManager : MonoBehaviour
                 }
             }
         ));
+    }
+
+    /// <summary>
+    /// Multi-pallet: terminó un pallet y quedan más. Pared trasera en verde, se pide el pallet
+    /// siguiente por voz y se espera su QR (el escaneo sigue activo).
+    /// </summary>
+    private void OnPalletCompletedWithMoreLeft()
+    {
+        int done = currentPalletIndex + 1;
+        Debug.Log($"[CubicajeAR] PALLET {done}/{palletPlans.Count} COMPLETADO: {assemblySequence.Length} piezas. " +
+                  "Esperando el QR del pallet siguiente.");
+        Speak($"Pallet {done} completo. Coloque el pallet {done + 1} y escanéelo");
+        StartCoroutine(PalletCompletedFeedback());
+        palletCompletedTime = Time.time;
+        state = State.WaitingNextPallet;
+    }
+
+    /// <summary>
+    /// Último pallet terminado: fin de la orden. Pared trasera en verde y escaneo de QR desactivado.
+    /// </summary>
+    private void OnOrderCompleted()
+    {
+        Debug.Log($"[CubicajeAR] SECUENCIA COMPLETADA: {assemblySequence.Length} piezas colocadas " +
+                  $"(pallet {currentPalletIndex + 1}/{palletPlans.Count}). Escaneo de QR desactivado.");
+        Speak(palletPlans.Count > 1 ? "Pallet completo. Orden completa" : "Pallet completo");
+        state = State.Done;
+        StartCoroutine(PalletCompletedFeedback());
+        markerMgr.enabled = false;
     }
 
     private GameObject CreateTravelPiece(PlacedPiece d, Vector3 worldPos, Quaternion worldRot)
