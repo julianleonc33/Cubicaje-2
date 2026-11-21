@@ -94,6 +94,14 @@ public class CubicajeARManager : MonoBehaviour
     [Tooltip("Holgura visual entre hologramas vecinos (m). Solo achica lo que se dibuja, no el cálculo.")]
     public float visualGap = 0.002f;
 
+    [Header("Estabilidad")]
+    [Tooltip("Material base de los hologramas (pallet y piezas). Debe escribir profundidad (Depth Write On) " +
+             "para que el HoloLens los estabilice bien. Vacío = shader transparente antiguo.")]
+    public Material hologramMaterialTemplate;
+
+    [Tooltip("Diagnóstico: se deja en el log cada corrección del ancla del pallet mayor a este valor (mm).")]
+    public float anchorLogThresholdMm = 2f;
+
     // ===== Internos AR / escena =====
     private ARSession arSession;
     private Camera cam;
@@ -171,6 +179,12 @@ public class CubicajeARManager : MonoBehaviour
         seqIndex = 0;
 
         markerMgr.enabled = true;
+
+        // Sin ARAnchorManager en la escena, el ARAnchor del pallet nunca se registra (queda pendiente)
+        if (FindObjectOfType<ARAnchorManager>() == null)
+            Debug.LogWarning("[CubicajeAR] No hay ARAnchorManager en la escena: el pallet no quedará anclado al mundo.");
+        else
+            Debug.Log("[CubicajeAR] ARAnchorManager presente: el pallet se anclará al mundo.");
 
         Debug.Log($"[CubicajeAR] Awake OK — markerMgr={(markerMgr != null ? markerMgr.name : "NULL")}");
     }
@@ -598,10 +612,59 @@ public class CubicajeARManager : MonoBehaviour
             }
         }
 
-        if (pallet.GetComponent<ARAnchor>() == null)
-            pallet.AddComponent<ARAnchor>();
+        var anchor = pallet.GetComponent<ARAnchor>();
+        if (anchor == null)
+            anchor = pallet.AddComponent<ARAnchor>();
 
         StartCoroutine(AnimatePalletIn());
+        StartCoroutine(MonitorPalletAnchor(pallet, anchor));
+    }
+
+    /// <summary>
+    /// Diagnóstico de estabilidad: mientras exista el pallet, deja en el log el estado del ancla
+    /// cuando cambia y cada vez que el pallet se desplaza más de anchorLogThresholdMm.
+    /// Sirve para saber si el ancla se creó (trackableId válido) y cuánto la corrige el HoloLens.
+    /// </summary>
+    private IEnumerator MonitorPalletAnchor(GameObject palletGO, ARAnchor anchor)
+    {
+        Vector3 lastPos = palletGO.transform.position;
+        TrackingState lastState = (TrackingState)(-1);
+        float startTime = Time.time;
+
+        while (palletGO != null && anchor != null)
+        {
+            if (anchor.trackingState != lastState)
+            {
+                lastState = anchor.trackingState;
+                Debug.Log($"[CubicajeAR] Ancla del pallet: estado={lastState} id={anchor.trackableId} " +
+                          $"pendiente={anchor.pending} t={Time.time - startTime:F1}s");
+            }
+
+            float movedMm = Vector3.Distance(palletGO.transform.position, lastPos) * 1000f;
+            if (movedMm > anchorLogThresholdMm)
+            {
+                Debug.Log($"[CubicajeAR] Ancla del pallet corregida: se movió {movedMm:F1} mm " +
+                          $"(t={Time.time - startTime:F1}s).");
+                lastPos = palletGO.transform.position;
+            }
+
+            yield return new WaitForSeconds(0.5f);
+        }
+    }
+
+    /// <summary>
+    /// Material de un holograma (paredes del pallet y piezas) con el color indicado.
+    /// Si se asignó hologramMaterialTemplate en el Inspector (shader que escribe profundidad),
+    /// se usa como base; si no, el shader transparente de siempre (no escribe profundidad).
+    /// </summary>
+    private Material CreateHologramMaterial(Color color)
+    {
+        if (hologramMaterialTemplate != null)
+            return new Material(hologramMaterialTemplate) { color = color };
+
+        var shader = Shader.Find("Legacy Shaders/Transparent/Diffuse")
+                     ?? Shader.Find("Legacy Shaders/Diffuse");
+        return new Material(shader) { color = color };
     }
 
     private GameObject CreateHollowPallet(
@@ -611,12 +674,9 @@ public class CubicajeARManager : MonoBehaviour
     {
         GameObject root = new GameObject(name);
 
-        var shader = Shader.Find("Legacy Shaders/Transparent/Diffuse")
-                     ?? Shader.Find("Legacy Shaders/Diffuse");
-
-        var matWall = new Material(shader) { color = wallCol };
-        var matFloor = new Material(shader) { color = floorCol };
-        var matBack = new Material(shader) { color = backCol };
+        var matWall = CreateHologramMaterial(wallCol);
+        var matFloor = CreateHologramMaterial(floorCol);
+        var matBack = CreateHologramMaterial(backCol);
 
         // Piso
         var baseGO = GameObject.CreatePrimitive(PrimitiveType.Cube);
@@ -808,6 +868,10 @@ public class CubicajeARManager : MonoBehaviour
             endRot,
             () =>
             {
+                // La pieza aterrizada pasa a ser hija del pallet: si el ancla lo corrige, la pieza lo acompaña
+                if (currentTravelPiece != null && pallet != null)
+                    currentTravelPiece.transform.SetParent(pallet.transform, true);
+
                 seqIndex++;
                 Debug.Log($"[CubicajeAR] Pieza {def.id} colocada en su slot ({seqIndex}/{assemblySequence.Length}).");
                 if (seqIndex >= assemblySequence.Length)
@@ -863,9 +927,7 @@ public class CubicajeARManager : MonoBehaviour
         go.transform.rotation   = worldRot;
         go.transform.localScale = VisualScale(d.scale);
 
-        var shader = Shader.Find("Legacy Shaders/Transparent/Diffuse")
-                     ?? Shader.Find("Legacy Shaders/Diffuse");
-        var mat = new Material(shader) { color = travelColor };
+        var mat = CreateHologramMaterial(travelColor);
 
         var r = go.GetComponent<Renderer>();
         if (r) r.sharedMaterial = mat;
@@ -900,9 +962,7 @@ public class CubicajeARManager : MonoBehaviour
         go.transform.rotation   = marker.transform.rotation;
         go.transform.localScale = def.scale;
 
-        var shader = Shader.Find("Legacy Shaders/Transparent/Diffuse")
-                     ?? Shader.Find("Legacy Shaders/Diffuse");
-        var mat = new Material(shader) { color = errorColor };
+        var mat = CreateHologramMaterial(errorColor);
 
         var r = go.GetComponent<Renderer>();
         if (r) r.sharedMaterial = mat;
